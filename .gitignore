@@ -1,0 +1,6 @@
+out/
+*.pbf
+*.opl
+.claude-index
+node_modules/
+!test/sample.opl

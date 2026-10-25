@@ -1,0 +1,64 @@
+name: tegels
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'   # Monday 03:17 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]       # a push also keeps the schedule alive (GitHub disables it after 60 days without activity)
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test
+        run: node test.mjs
+      - name: Install osmium
+        run: sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+      - name: Download Netherlands extract
+        run: curl -sSfL -o nl.osm.pbf https://download.geofabrik.de/europe/netherlands-latest.osm.pbf && ls -l nl.osm.pbf
+      - name: Filter car roads
+        run: |
+          osmium tags-filter nl.osm.pbf \
+            w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street \
+            n/highway=traffic_signals \
+            -o roads.osm.pbf
+          osmium add-locations-to-ways roads.osm.pbf -f opl,add_metadata=false -o roads.opl
+          ls -l roads.osm.pbf roads.opl
+      - name: Build tiles
+        run: |
+          STAND=$(osmium fileinfo -g header.option.osmosis_replication_timestamp nl.osm.pbf || true)
+          echo "stand: $STAND"
+          node --max-old-space-size=6144 tegels.mjs roads.opl out --stand "$STAND"
+          cp site/* out/
+      - name: Sanity check
+        run: |
+          N=$(node -p "require('./out/meta.json').tegels")
+          echo "tiles: $N, size: $(du -sh out | cut -f1)"
+          if [ "$N" -lt 15000 ]; then echo "only $N tiles, refusing to publish"; exit 1; fi
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
